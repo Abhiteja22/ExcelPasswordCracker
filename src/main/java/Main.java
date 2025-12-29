@@ -11,11 +11,12 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.IntStream;
 
 public class Main {
     public static void main(String[] args) {
-        String fileToCrack = (args.length > 0 && args[1] != null) ? args[1] : "input.xlsx";
+        String fileToCrack = (args.length > 0 && args[0] != null) ? args[0] : "input.xlsx";
         final File inputFile = new File(fileToCrack);
         String crackedPassword = crackPassword(inputFile);
         System.out.println("Password found: " + crackedPassword);
@@ -25,24 +26,28 @@ public class Main {
         Character[] charSet = crackingCharacterSet();
 
         // Parameters
-        final int minPasswordLength = 2;
+        final int minPasswordLength = 4;
         final int maxPasswordLength = Integer.MAX_VALUE;
+
+        // Statistics tracking
+        final AtomicLong passwordsTested = new AtomicLong(0);
+        final Instant startTime = Instant.now();
 
         // Thread pool
         int threadCount = Runtime.getRuntime().availableProcessors();
         ExecutorService threadPoolExecutor = new ThreadPoolExecutor(threadCount, threadCount, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>());
         CompletableFuture<String> cf = new CompletableFuture<>();
-        BlockingQueue<String> passwordQueue = new LinkedBlockingQueue<>(threadCount * 2);
+        BlockingQueue<String> passwordQueue = new LinkedBlockingQueue<>(threadCount * 4);
 
         // Runnables to execute
         final Decryptor excelDecryptor = getDecryptor(inputFile);
         Runnable producer = passwordProvider(charSet, passwordQueue, minPasswordLength, maxPasswordLength);
-        Runnable consumer = passwordCracker(cf, passwordQueue, excelDecryptor);
+        Runnable consumer = passwordCracker(cf, passwordQueue, excelDecryptor, passwordsTested);
 
         executeRunnableDesiredTimes(1, threadPoolExecutor, producer);
         executeRunnableDesiredTimes(threadCount - 1, threadPoolExecutor, consumer);
 
-        String result = crackPassword(threadPoolExecutor, cf);
+        String result = crackPassword(threadPoolExecutor, cf, passwordsTested, startTime);
         return result;
     }
 
@@ -60,14 +65,22 @@ public class Main {
         return charSet;
     }
 
-    private static String crackPassword(ExecutorService service, CompletableFuture<String> cf) {
+    private static String crackPassword(ExecutorService service, CompletableFuture<String> cf, AtomicLong passwordsTested, Instant startTime) {
         String result = "";
         try {
-            Instant start = Instant.now();
             result = cf.get();
             Instant finish = Instant.now();
-            long timeElapsed = Duration.between(start, finish).toSeconds();
+            long timeElapsed = Duration.between(startTime, finish).toSeconds();
+            long passwordsTestedCount = passwordsTested.get();
+            double passwordsPerSecond = (double) passwordsTestedCount / Math.max(1, timeElapsed);
+            
+            System.out.println("\n========== RESULTS ==========");
+            System.out.println("Password found: " + result);
             System.out.println("Total time elapsed: " + timeElapsed + "s");
+            System.out.println("Passwords tested: " + passwordsTestedCount);
+            System.out.println("Passwords per second: " + String.format("%.2f", passwordsPerSecond));
+            System.out.println("=============================\n");
+            
             service.shutdownNow();
         } catch (InterruptedException | ExecutionException e) {
             e.printStackTrace();
@@ -86,25 +99,33 @@ public class Main {
         return () -> {
             generatorLoop:
             for (int i = minLen; i < maxLen; ++i) {
-                ArrayList<String> passwords = new ArrayList<>();
-                passwords.addAll(generatePasswordsForDesiredLength(charSet, i, "", charSetSize));
-                for (int j = 0; j < passwords.size(); j++) {
-                    String pass = passwords.get(j);
-                    try {
-                        passwordQueue.offer(pass, 12, TimeUnit.HOURS);
-                    } catch (InterruptedException ignored) {
-                        break generatorLoop;
-                    }
+                // Generate passwords on-the-fly instead of storing all in memory
+                try {
+                    generateAndQueuePasswords(charSet, passwordQueue, i, "", charSetSize);
+                } catch (InterruptedException ignored) {
+                    break generatorLoop;
                 }
             }
         };
     }
 
-    private static Runnable passwordCracker(CompletableFuture<String> cf, BlockingQueue<String> passwordQueue, Decryptor excelDecryptor) {
+    private static void generateAndQueuePasswords(Character[] charSet, BlockingQueue<String> passwordQueue, 
+                                                   int length, String prefix, int charSetSize) throws InterruptedException {
+        if (length == 0) {
+            passwordQueue.offer(prefix, 12, TimeUnit.HOURS);
+            return;
+        }
+        for (Character c : charSet) {
+            generateAndQueuePasswords(charSet, passwordQueue, length - 1, prefix + c, charSetSize);
+        }
+    }
+
+    private static Runnable passwordCracker(CompletableFuture<String> cf, BlockingQueue<String> passwordQueue, Decryptor excelDecryptor, AtomicLong passwordsTested) {
         return () -> {
             while (!Thread.interrupted()) {
                 try {
                     String password = passwordQueue.take();
+                    passwordsTested.incrementAndGet();
                     print("Testing password: " + password);
                     boolean decryptResult = excelDecryptor.verifyPassword(password);
                     if (decryptResult) {
@@ -141,19 +162,6 @@ public class Main {
             chars[i] = letters.get(i);
         }
         return chars;
-    }
-
-    static ArrayList<String> generatePasswordsForDesiredLength(Character[] arr, int i, String s, int length) {
-        ArrayList<String> passwords = new ArrayList<>();
-        if (i == 0) {
-            passwords.add(s);
-            return passwords;
-        }
-        for (int j = 0; j < length; j++) {
-            String appended = s + arr[j];
-            passwords.addAll(generatePasswordsForDesiredLength(arr, i - 1, appended, length));
-        }
-        return passwords;
     }
 
     static void print(Object output) {
