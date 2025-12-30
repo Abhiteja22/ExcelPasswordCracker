@@ -9,7 +9,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
+import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.IntStream;
@@ -26,7 +26,7 @@ public class Main {
         Character[] charSet = crackingCharacterSet();
 
         // Parameters
-        final int minPasswordLength = 4;
+        final int minPasswordLength = 6;
         final int maxPasswordLength = Integer.MAX_VALUE;
 
         // Statistics tracking
@@ -95,18 +95,242 @@ public class Main {
     }
 
     private static Runnable passwordProvider(Character[] charSet, BlockingQueue<String> passwordQueue, int minLen, int maxLen) {
-        int charSetSize = charSet.length;
         return () -> {
-            generatorLoop:
-            for (int i = minLen; i < maxLen; ++i) {
-                // Generate passwords on-the-fly instead of storing all in memory
-                try {
-                    generateAndQueuePasswords(charSet, passwordQueue, i, "", charSetSize);
-                } catch (InterruptedException ignored) {
-                    break generatorLoop;
+            try {
+                // 1. Dictionary attack with common passwords
+                System.out.println("[INFO] Starting dictionary attack...");
+                List<String> dictionaryAttack = generateDictionaryAttack();
+                
+                for (String password : dictionaryAttack) {
+                    if (Thread.interrupted()) break;
+                    passwordQueue.offer(password, 12, TimeUnit.HOURS);
                 }
+                
+                // 2. Random sequence generation with no repeating characters (length 6-10)
+                System.out.println("[INFO] Dictionary attack completed. Starting random sequence generation (length 6-10, no repeating chars)...");
+                generateRandomSequences(passwordQueue, 10000000); // Generate 10 million random passwords
+                
+                // 3. If all else fails, fall back to limited brute force
+                System.out.println("[INFO] Random sequences completed. Starting brute force fallback (length 4-6)...");
+                bruteForcePasswords(charSet, passwordQueue, minLen, Math.min(maxLen, 6));
+                
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
             }
         };
+    }
+
+    private static void generateRandomSequences(BlockingQueue<String> passwordQueue, int count) throws InterruptedException {
+        Random random = new Random();
+        
+        // Character sets
+        String uppercase = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        String lowercase = "abcdefghijklmnopqrstuvwxyz";
+        String numbers = "0123456789";
+        String specialChars = "!@#$%^&*()_+-=[]{}|;:,.<>?";
+        
+        for (int i = 0; i < count; i++) {
+            if (Thread.interrupted()) break;
+            
+            // Random length between 6-10
+            int length = 6 + random.nextInt(5); // 6, 7, 8, 9, or 10
+            
+            // Determine how many special characters to include (0, 1, or 2 max)
+            int numSpecialChars = random.nextInt(3); // 0, 1, or 2
+            numSpecialChars = Math.min(numSpecialChars, length - 1); // Ensure we have room for other chars
+            
+            // Build available characters list
+            List<Character> availableChars = new ArrayList<>();
+            
+            // Add uppercase letters
+            for (char c : uppercase.toCharArray()) {
+                availableChars.add(c);
+            }
+            // Add lowercase letters
+            for (char c : lowercase.toCharArray()) {
+                availableChars.add(c);
+            }
+            // Add numbers
+            for (char c : numbers.toCharArray()) {
+                availableChars.add(c);
+            }
+            // Add special characters (limited)
+            int specialCharsToAdd = numSpecialChars;
+            for (char c : specialChars.toCharArray()) {
+                if (specialCharsToAdd > 0) {
+                    availableChars.add(c);
+                    specialCharsToAdd--;
+                } else {
+                    break;
+                }
+            }
+            
+            // Generate random sequence with no repeating characters
+            StringBuilder password = new StringBuilder();
+            List<Character> charsToUse = new ArrayList<>(availableChars);
+            
+            for (int j = 0; j < length && charsToUse.size() > 0; j++) {
+                int randomIndex = random.nextInt(charsToUse.size());
+                password.append(charsToUse.get(randomIndex));
+                charsToUse.remove(randomIndex);
+            }
+            
+            if (password.length() == length) {
+                passwordQueue.offer(password.toString(), 12, TimeUnit.HOURS);
+            }
+        }
+    }
+
+    private static List<String> generateDictionaryAttack() {
+        List<String> passwords = new ArrayList<>();
+        
+        // Company names and test-related keywords
+        List<String> companies = Arrays.asList(
+            "Infosys", "BlueOcean", "Blue", "Ocean", "Systems", "infosys", "blueoceansystems", "agentic", "agenticAI", "AI", "AIagents", "AIsoftwareengineer"
+        );
+        
+        // Common base words (targeted for business/test context)
+        List<String> baseWords = Arrays.asList(
+            "password", "Password", "PASSWORD",
+            "admin", "Admin", "ADMIN",
+            "test", "Test", "TEST",
+            "user", "User", "USER",
+            "welcome", "Welcome", "WELCOME",
+            "login", "Login", "LOGIN",
+            "access", "Access", "ACCESS",
+            "secure", "Secure", "SECURE",
+            "excel", "Excel", "EXCEL",
+            "qa", "QA", "Qa",
+            "dev", "Dev", "DEV"
+        );
+        
+        // Common number combinations
+        List<String> numberSuffixes = Arrays.asList(
+            "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+            "00", "01", "23", "24", "25",
+            "123", "1234", "12345",
+            "2023", "2024", "2025", "2026",
+            "111", "222", "333", "444", "555", "666", "777", "888", "999",
+            "000", "007", "101", "111", "123", "456", "789", "999"
+        );
+        
+        // Special character options
+        List<String> specialChars = Arrays.asList(
+            "", "!", "@", "#", "$", "!", "!@", "@#", "#$", "!@#", "@#$", "#$%"
+        );
+        
+        // 1. Add Password variations with numbers (like Password123, Passw0rd123, etc.)
+        List<String> passwordVariations = Arrays.asList(
+            "Password", "Passw0rd", "Passw@rd", "Pass123", "Pass@123", "Pass!123"
+        );
+        
+        for (String pass : passwordVariations) {
+            for (String num : numberSuffixes) {
+                passwords.add(pass + num);
+            }
+            // With special chars
+            passwords.add(pass + "!");
+            passwords.add(pass + "@");
+            passwords.add(pass + "#");
+            passwords.add(pass + "123!");
+            passwords.add(pass + "@123");
+            passwords.add(pass + "#2024");
+        }
+        
+        // 2. Company name combinations
+        for (String company : companies) {
+            passwords.add(company);
+            passwords.add(company.toUpperCase());
+            passwords.add(capitalize(company));
+            
+            for (String num : numberSuffixes) {
+                passwords.add(company + num);
+                passwords.add(capitalize(company) + num);
+            }
+            
+            for (String special : specialChars) {
+                if (!special.isEmpty()) {
+                    passwords.add(company + special);
+                    passwords.add(company + special + "123");
+                    passwords.add(capitalize(company) + special + "2024");
+                }
+            }
+        }
+        
+        // 3. Company + Test/QA variations
+        for (String company : companies) {
+            passwords.add(company + "Test");
+            passwords.add(company + "Test123");
+            passwords.add(company + "Test@123");
+            passwords.add(company + "QA");
+            passwords.add(company + "QA123");
+            passwords.add(company + "2024");
+            passwords.add(company + "@2024");
+            passwords.add(company + "123!");
+        }
+        
+        // 4. Base word combinations
+        for (String base : baseWords) {
+            passwords.add(base);
+            
+            for (String num : numberSuffixes) {
+                if (!num.isEmpty()) {
+                    passwords.add(base + num);
+                }
+            }
+            
+            for (String special : specialChars) {
+                if (!special.isEmpty()) {
+                    passwords.add(base + special);
+                    passwords.add(base + special + "1");
+                    passwords.add(base + special + "123");
+                    passwords.add(base + special + "2024");
+                }
+            }
+        }
+        
+        // 5. Common test passwords (high priority)
+        List<String> commonTestPasswords = Arrays.asList(
+            "Test@123", "Test@2024", "Test123",
+            "Admin@123", "Admin123", "admin123",
+            "Password123", "Password@123", "Password!123",
+            "Passw0rd123", "Passw@rd123",
+            "Welcome@2024", "Welcome123",
+            "Secure#2024", "Secure123",
+            "BlueOcean@2024", "BlueOcean123",
+            "Infosys@123", "Infosys123", "infosys123",
+            "Systems@2024", "Systems123",
+            "QA@Test123", "QATest123", "qa123",
+            "Dev@Test2024", "DevTest123", "dev123",
+            "Qa!Test123", "QATest@123",
+            "Test!Pass123", "TestPass123"
+        );
+        passwords.addAll(commonTestPasswords);
+        
+        // 6. Excel/Sheet specific (since it's an Excel file)
+        List<String> excelPasswords = Arrays.asList(
+            "Excel123", "Excel@123", "Excel2024",
+            "Sheet123", "Sheet@2024",
+            "Document123", "Document@2024",
+            "Report123", "Report@2024"
+        );
+        passwords.addAll(excelPasswords);
+        
+        // Remove duplicates while preserving order
+        LinkedHashSet<String> uniquePasswords = new LinkedHashSet<>(passwords);
+        
+        return new ArrayList<>(uniquePasswords);
+    }
+
+    private static String capitalize(String str) {
+        if (str == null || str.isEmpty()) return str;
+        return str.substring(0, 1).toUpperCase() + str.substring(1).toLowerCase();
+    }
+
+    private static void bruteForcePasswords(Character[] charSet, BlockingQueue<String> passwordQueue, int minLen, int maxLen) throws InterruptedException {
+        for (int i = minLen; i <= maxLen; ++i) {
+            generateAndQueuePasswords(charSet, passwordQueue, i, "", charSet.length);
+        }
     }
 
     private static void generateAndQueuePasswords(Character[] charSet, BlockingQueue<String> passwordQueue, 
